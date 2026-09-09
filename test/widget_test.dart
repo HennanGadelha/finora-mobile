@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:finora_mobile/main.dart';
@@ -11,12 +13,52 @@ class FakeRegistrationRepository implements RegistrationRepository {
   }
 }
 
+class FakeAuthRepository implements AuthRepository {
+  LoginRequest? request;
+  AuthSession? response;
+  AuthException? error;
+  Completer<AuthSession>? completer;
+  bool sessionValid = true;
+
+  @override
+  Future<AuthSession> login(LoginRequest request) {
+    this.request = request;
+    if (error != null) return Future.error(error!);
+    if (completer != null) return completer!.future;
+    return Future.value(response ?? const AuthSession('token-de-teste'));
+  }
+
+  @override
+  Future<bool> validateSession(String token) async => sessionValid;
+}
+
+class FakeSessionStorage implements SessionStorage {
+  String? token;
+  int deleteCount = 0;
+  bool failOnRead = false;
+
+  @override
+  Future<String?> readToken() async {
+    if (failOnRead) throw StateError('storage unavailable');
+    return token;
+  }
+
+  @override
+  Future<void> writeToken(String token) async => this.token = token;
+
+  @override
+  Future<void> deleteToken() async {
+    deleteCount++;
+    token = null;
+  }
+}
+
 void main() {
   testWidgets('valida campos obrigatórios antes do envio', (tester) async {
     final repository = FakeRegistrationRepository();
-    await tester.pumpWidget(MaterialApp(
-      home: RegistrationPage(repository: repository),
-    ));
+    await tester.pumpWidget(
+      MaterialApp(home: RegistrationPage(repository: repository)),
+    );
 
     await tester.tap(find.byType(FilledButton));
     await tester.pump();
@@ -39,5 +81,135 @@ void main() {
       'senha': 'senha-segura',
       'dataNascimento': '15/02/1990',
     });
+  });
+
+  test('normaliza o request de login no contrato', () {
+    final request = LoginRequest(
+      email: 'ana@example.com',
+      password: 'senha-segura',
+    );
+
+    expect(request.toJson(), {
+      'email': 'ana@example.com',
+      'senha': 'senha-segura',
+    });
+  });
+
+  test('restaura uma sessão persistida sem expor o token', () async {
+    final storage = FakeSessionStorage()..token = 'token-persistido';
+    final controller = SessionController(
+      repository: FakeAuthRepository(),
+      storage: storage,
+    );
+
+    await controller.restore();
+
+    expect(controller.status, SessionStatus.signedIn);
+    expect(controller.errorMessage, isNull);
+  });
+
+  test(
+    'remove uma sessão persistida quando o backend rejeita o token',
+    () async {
+      final storage = FakeSessionStorage()..token = 'token-expirado';
+      final controller = SessionController(
+        repository: FakeAuthRepository()..sessionValid = false,
+        storage: storage,
+      );
+
+      await controller.restore();
+
+      expect(controller.status, SessionStatus.signedOut);
+      expect(storage.token, isNull);
+      expect(storage.deleteCount, 1);
+    },
+  );
+
+  test('encerra a sessão quando o armazenamento falha ao restaurar', () async {
+    final controller = SessionController(
+      repository: FakeAuthRepository(),
+      storage: FakeSessionStorage()..failOnRead = true,
+    );
+
+    await controller.restore();
+
+    expect(controller.status, SessionStatus.signedOut);
+    expect(controller.errorMessage, isNull);
+  });
+
+  test('login persiste a sessão e logout remove o token', () async {
+    final storage = FakeSessionStorage();
+    final controller = SessionController(
+      repository: FakeAuthRepository(),
+      storage: storage,
+    )..status = SessionStatus.signedOut;
+
+    final loggedIn = await controller.login(
+      const LoginRequest(email: 'ana@example.com', password: 'senha-segura'),
+    );
+    expect(loggedIn, isTrue);
+    expect(controller.status, SessionStatus.signedIn);
+    expect(storage.token, 'token-de-teste');
+
+    await controller.logout();
+    expect(controller.status, SessionStatus.signedOut);
+    expect(storage.token, isNull);
+    expect(storage.deleteCount, 1);
+  });
+
+  test('rejeita credenciais inválidas sem persistir sessão', () async {
+    final storage = FakeSessionStorage();
+    final repository = FakeAuthRepository()
+      ..error = const AuthException('E-mail ou senha inválidos.');
+    final controller = SessionController(
+      repository: repository,
+      storage: storage,
+    )..status = SessionStatus.signedOut;
+
+    final loggedIn = await controller.login(
+      const LoginRequest(email: 'ana@example.com', password: 'senha-segura'),
+    );
+
+    expect(loggedIn, isFalse);
+    expect(controller.status, SessionStatus.signedOut);
+    expect(controller.errorMessage, 'E-mail ou senha inválidos.');
+    expect(storage.token, isNull);
+  });
+
+  testWidgets('login valida campos antes de enviar', (tester) async {
+    final repository = FakeAuthRepository();
+    final controller = SessionController(
+      repository: repository,
+      storage: FakeSessionStorage(),
+    )..status = SessionStatus.signedOut;
+
+    await tester.pumpWidget(MaterialApp(home: LoginPage(session: controller)));
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+
+    expect(find.text('Informe seu e-mail.'), findsOneWidget);
+    expect(repository.request, isNull);
+  });
+
+  testWidgets('login bloqueia nova submissão enquanto aguarda resposta', (
+    tester,
+  ) async {
+    final repository = FakeAuthRepository()
+      ..completer = Completer<AuthSession>();
+    final controller = SessionController(
+      repository: repository,
+      storage: FakeSessionStorage(),
+    )..status = SessionStatus.signedOut;
+
+    await tester.pumpWidget(MaterialApp(home: LoginPage(session: controller)));
+    final fields = find.byType(TextFormField);
+    await tester.enterText(fields.at(0), 'ANA@EXAMPLE.COM');
+    await tester.enterText(fields.at(1), 'senha-segura');
+    await tester.tap(find.byType(FilledButton));
+    await tester.pump();
+    await tester.tap(find.byType(FilledButton));
+
+    expect(repository.request?.email, 'ana@example.com');
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
   });
 }
