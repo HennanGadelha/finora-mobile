@@ -19,10 +19,58 @@ class AuthSession {
   final String token;
 }
 
+class UserProfile {
+  const UserProfile({
+    required this.name,
+    required this.email,
+    required this.birthDate,
+    required this.active,
+  });
+
+  final String name;
+  final String email;
+  final DateTime birthDate;
+  final bool active;
+
+  factory UserProfile.fromJson(Map<String, dynamic> json) {
+    final birthDateValue = json['dataNascimento'];
+    if (birthDateValue is! String) {
+      throw const FormatException('Data de nascimento ausente.');
+    }
+
+    return UserProfile(
+      name: json['nome'] as String? ?? '',
+      email: json['email'] as String? ?? '',
+      birthDate: _parseDate(birthDateValue),
+      active: json['ativo'] as bool? ?? json['status'] == 'ATIVO',
+    );
+  }
+}
+
+DateTime _parseDate(String value) {
+  final match = RegExp(r'^(\d{2})/(\d{2})/(\d{4})$').firstMatch(value);
+  if (match == null) {
+    throw const FormatException('Data de nascimento inválida.');
+  }
+  final date = DateTime(
+    int.parse(match.group(3)!),
+    int.parse(match.group(2)!),
+    int.parse(match.group(1)!),
+  );
+  if (_formatDate(date) != value) {
+    throw const FormatException('Data de nascimento inválida.');
+  }
+  return date;
+}
+
 abstract interface class AuthRepository {
   Future<AuthSession> login(LoginRequest request);
 
   Future<bool> validateSession(String token);
+}
+
+abstract interface class ProfileRepository {
+  Future<UserProfile> fetchProfile(String token);
 }
 
 abstract interface class SessionStorage {
@@ -108,7 +156,16 @@ class _SessionGateState extends State<SessionGate> {
       case SessionStatus.signedOut:
         return LoginPage(session: widget.session);
       case SessionStatus.signedIn:
-        return ProtectedHomePage(session: widget.session);
+        final profileRepository = widget.session.profileRepository;
+        if (profileRepository == null) {
+          return const Scaffold(
+            body: Center(child: Text('Perfil indisponível.')),
+          );
+        }
+        return ProtectedHomePage(
+          session: widget.session,
+          repository: profileRepository,
+        );
     }
   }
 }
@@ -119,7 +176,7 @@ class AuthException implements Exception {
   final String message;
 }
 
-class AuthApiClient implements AuthRepository {
+class AuthApiClient implements AuthRepository, ProfileRepository {
   AuthApiClient({Uri? baseUri})
     : baseUri =
           baseUri ??
@@ -201,6 +258,46 @@ class AuthApiClient implements AuthRepository {
       client.close(force: true);
     }
   }
+
+  @override
+  Future<UserProfile> fetchProfile(String token) async {
+    final client = HttpClient();
+    try {
+      final httpRequest = await client.getUrl(baseUri.resolve('/api/users/me'));
+      httpRequest.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
+      final response = await httpRequest.close();
+      final responseBody = await utf8.decoder.bind(response).join();
+      if (response.statusCode == 401 || response.statusCode == 403) {
+        throw const ProfileException(
+          'Sua sessão não está mais válida.',
+          unauthorized: true,
+        );
+      }
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final payload = jsonDecode(responseBody) as Map<String, dynamic>;
+        return UserProfile.fromJson(payload);
+      }
+      throw const ProfileException(
+        'Não foi possível carregar seu perfil. Tente novamente.',
+      );
+    } on ProfileException {
+      rethrow;
+    } on FormatException {
+      throw const ProfileException(
+        'Não foi possível carregar seu perfil. Tente novamente.',
+      );
+    } on SocketException {
+      throw const ProfileException(
+        'Não foi possível conectar ao servidor. Tente novamente.',
+      );
+    } on HttpException {
+      throw const ProfileException(
+        'Não foi possível carregar seu perfil. Tente novamente.',
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
 }
 
 enum SessionStatus { loading, signedOut, signedIn }
@@ -213,6 +310,12 @@ class SessionController extends ChangeNotifier {
   SessionStatus status = SessionStatus.loading;
   String? errorMessage;
   bool isSubmitting = false;
+  String? _token;
+
+  ProfileRepository? get profileRepository =>
+      repository is ProfileRepository ? repository as ProfileRepository : null;
+
+  String? get accessToken => _token;
 
   Future<void> restore() async {
     try {
@@ -220,9 +323,11 @@ class SessionController extends ChangeNotifier {
       if (token == null || token.isEmpty) {
         status = SessionStatus.signedOut;
       } else if (await repository.validateSession(token)) {
+        _token = token;
         status = SessionStatus.signedIn;
       } else {
         await storage.deleteToken();
+        _token = null;
         status = SessionStatus.signedOut;
       }
     } catch (_) {
@@ -239,6 +344,7 @@ class SessionController extends ChangeNotifier {
     try {
       final session = await repository.login(request);
       await storage.writeToken(session.token);
+      _token = session.token;
       status = SessionStatus.signedIn;
       return true;
     } on AuthException catch (error) {
@@ -257,8 +363,54 @@ class SessionController extends ChangeNotifier {
 
   Future<void> logout() async {
     await storage.deleteToken();
+    _token = null;
     errorMessage = null;
     status = SessionStatus.signedOut;
+    notifyListeners();
+  }
+}
+
+class ProfileException implements Exception {
+  const ProfileException(this.message, {this.unauthorized = false});
+
+  final String message;
+  final bool unauthorized;
+}
+
+enum ProfileStatus { loading, success, error }
+
+class ProfileController extends ChangeNotifier {
+  ProfileController({required this.repository, required this.session});
+
+  final ProfileRepository repository;
+  final SessionController session;
+  ProfileStatus status = ProfileStatus.loading;
+  UserProfile? profile;
+  String? errorMessage;
+
+  Future<void> load() async {
+    status = ProfileStatus.loading;
+    errorMessage = null;
+    notifyListeners();
+    final token = session.accessToken;
+    if (token == null || token.isEmpty) {
+      await session.logout();
+      return;
+    }
+    try {
+      profile = await repository.fetchProfile(token);
+      status = ProfileStatus.success;
+    } on ProfileException catch (error) {
+      if (error.unauthorized) {
+        await session.logout();
+        return;
+      }
+      status = ProfileStatus.error;
+      errorMessage = error.message;
+    } catch (_) {
+      status = ProfileStatus.error;
+      errorMessage = 'Não foi possível carregar seu perfil. Tente novamente.';
+    }
     notifyListeners();
   }
 }
@@ -375,10 +527,44 @@ class _LoginPageState extends State<LoginPage> {
   }
 }
 
-class ProtectedHomePage extends StatelessWidget {
-  const ProtectedHomePage({super.key, required this.session});
+class ProtectedHomePage extends StatefulWidget {
+  const ProtectedHomePage({
+    super.key,
+    required this.session,
+    required this.repository,
+  });
 
   final SessionController session;
+  final ProfileRepository repository;
+
+  @override
+  State<ProtectedHomePage> createState() => _ProtectedHomePageState();
+}
+
+class _ProtectedHomePageState extends State<ProtectedHomePage> {
+  late final ProfileController _profile;
+
+  @override
+  void initState() {
+    super.initState();
+    _profile = ProfileController(
+      repository: widget.repository,
+      session: widget.session,
+    )..addListener(_onProfileChanged);
+    _profile.load();
+  }
+
+  @override
+  void dispose() {
+    _profile
+      ..removeListener(_onProfileChanged)
+      ..dispose();
+    super.dispose();
+  }
+
+  void _onProfileChanged() {
+    if (mounted) setState(() {});
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -387,13 +573,107 @@ class ProtectedHomePage extends StatelessWidget {
         title: const Text('Finora'),
         actions: [
           IconButton(
-            onPressed: session.logout,
+            onPressed: widget.session.logout,
             tooltip: 'Sair',
             icon: const Icon(Icons.logout),
           ),
         ],
       ),
-      body: const Center(child: Text('Área protegida')),
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 640),
+            child: Padding(
+              padding: const EdgeInsets.all(24),
+              child: _buildContent(),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildContent() {
+    switch (_profile.status) {
+      case ProfileStatus.loading:
+        return const Center(child: CircularProgressIndicator());
+      case ProfileStatus.error:
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Não foi possível carregar seu perfil',
+              style: Theme.of(context).textTheme.titleLarge,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(_profile.errorMessage!, textAlign: TextAlign.center),
+            const SizedBox(height: 24),
+            OutlinedButton.icon(
+              onPressed: _profile.load,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Tentar novamente'),
+            ),
+          ],
+        );
+      case ProfileStatus.success:
+        final profile = _profile.profile!;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Meu perfil',
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
+            const SizedBox(height: 8),
+            const Text('Confira os dados da sua conta.'),
+            const SizedBox(height: 24),
+            _ProfileField(label: 'Nome', value: profile.name),
+            _ProfileField(label: 'E-mail', value: profile.email),
+            _ProfileField(
+              label: 'Data de nascimento',
+              value: _formatDate(profile.birthDate),
+            ),
+            _ProfileField(
+              label: 'Estado da conta',
+              value: profile.active ? 'Ativa' : 'Inativa',
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: () {},
+              icon: const Icon(Icons.edit_outlined),
+              label: const Text('Editar perfil'),
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: () {},
+              icon: const Icon(Icons.person_off_outlined),
+              label: const Text('Inativar conta'),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Theme.of(context).colorScheme.error,
+              ),
+            ),
+          ],
+        );
+    }
+  }
+}
+
+class _ProfileField extends StatelessWidget {
+  const _ProfileField({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 16),
+      child: InputDecorator(
+        decoration: InputDecoration(labelText: label),
+        child: Text(value),
+      ),
     );
   }
 }
