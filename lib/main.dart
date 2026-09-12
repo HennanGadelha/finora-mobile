@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class LoginRequest {
@@ -122,6 +123,13 @@ class FinoraApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Finora',
+      locale: const Locale('pt', 'BR'),
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      supportedLocales: const [Locale('pt', 'BR')],
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF2563EB)),
       ),
@@ -741,6 +749,7 @@ class _ProtectedHomePageState extends State<ProtectedHomePage> {
   Future<void> _selectEditBirthDate() async {
     final selected = await showDatePicker(
       context: context,
+      locale: const Locale('pt', 'BR'),
       initialDate: _editBirthDate ?? DateTime(1990),
       firstDate: DateTime(1900),
       lastDate: DateTime.now(),
@@ -1131,6 +1140,7 @@ class _RegistrationPageState extends State<RegistrationPage> {
   Future<void> _selectBirthDate() async {
     final selected = await showDatePicker(
       context: context,
+      locale: const Locale('pt', 'BR'),
       initialDate: _birthDate ?? DateTime(1990),
       firstDate: DateTime(1900),
       lastDate: DateTime.now(),

@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:finora_mobile/main.dart';
 
@@ -97,7 +98,16 @@ void main() {
   testWidgets('valida campos obrigatórios antes do envio', (tester) async {
     final repository = FakeRegistrationRepository();
     await tester.pumpWidget(
-      MaterialApp(home: RegistrationPage(repository: repository)),
+      MaterialApp(
+        locale: const Locale('pt', 'BR'),
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: const [Locale('pt', 'BR')],
+        home: RegistrationPage(repository: repository),
+      ),
     );
 
     await tester.tap(find.byType(FilledButton));
@@ -113,7 +123,16 @@ void main() {
     final repository = FakeRegistrationRepository()
       ..error = StateError('falha inesperada');
     await tester.pumpWidget(
-      MaterialApp(home: RegistrationPage(repository: repository)),
+      MaterialApp(
+        locale: const Locale('pt', 'BR'),
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        supportedLocales: const [Locale('pt', 'BR')],
+        home: RegistrationPage(repository: repository),
+      ),
     );
     await tester.enterText(find.byType(TextFormField).at(0), 'Ana Silva');
     await tester.enterText(find.byType(TextFormField).at(1), 'ana@example.com');
