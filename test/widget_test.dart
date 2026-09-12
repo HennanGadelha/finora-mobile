@@ -438,6 +438,59 @@ void main() {
     expect(repository.request, isNull);
   });
 
+  testWidgets('login alterna visibilidade da senha sem alterar o valor', (
+    tester,
+  ) async {
+    final controller = SessionController(
+      repository: FakeAuthRepository(),
+      storage: FakeSessionStorage(),
+    )..status = SessionStatus.signedOut;
+
+    await tester.pumpWidget(MaterialApp(home: LoginPage(session: controller)));
+    final passwordField = find.byType(TextFormField).at(1);
+    await tester.enterText(passwordField, 'senha-segura');
+
+    final innerPasswordField = find.descendant(
+      of: passwordField,
+      matching: find.byType(TextField),
+    );
+    expect(tester.widget<TextField>(innerPasswordField).obscureText, isTrue);
+    await tester.tap(find.byTooltip('Mostrar senha'));
+    await tester.pump();
+
+    expect(tester.widget<TextField>(innerPasswordField).obscureText, isFalse);
+    expect(find.text('senha-segura'), findsOneWidget);
+    await tester.tap(find.byTooltip('Ocultar senha'));
+    await tester.pump();
+    expect(tester.widget<TextField>(innerPasswordField).obscureText, isTrue);
+  });
+
+  testWidgets('cadastro alterna visibilidade da senha sem alterar o valor', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RegistrationPage(repository: FakeRegistrationRepository()),
+      ),
+    );
+    final passwordField = find.byType(TextFormField).at(2);
+    await tester.enterText(passwordField, 'senha-segura');
+
+    final innerPasswordField = find.descendant(
+      of: passwordField,
+      matching: find.byType(TextField),
+    );
+    expect(tester.widget<TextField>(innerPasswordField).obscureText, isTrue);
+    await tester.tap(find.byTooltip('Mostrar senha'));
+    await tester.pump();
+
+    expect(tester.widget<TextField>(innerPasswordField).obscureText, isFalse);
+    expect(find.text('senha-segura'), findsOneWidget);
+    await tester.tap(find.byTooltip('Ocultar senha'));
+    await tester.pump();
+    expect(tester.widget<TextField>(innerPasswordField).obscureText, isTrue);
+  });
+
   testWidgets('login oferece acesso ao cadastro', (tester) async {
     final controller = SessionController(
       repository: FakeAuthRepository(),
