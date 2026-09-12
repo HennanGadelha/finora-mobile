@@ -32,6 +32,25 @@ class FakeAuthRepository implements AuthRepository {
   Future<bool> validateSession(String token) async => sessionValid;
 }
 
+class FakeProfileRepository implements ProfileRepository {
+  UserProfile? response;
+  ProfileException? error;
+  int calls = 0;
+
+  @override
+  Future<UserProfile> fetchProfile(String token) async {
+    calls++;
+    if (error != null) throw error!;
+    return response ??
+        UserProfile(
+          name: 'Ana Silva',
+          email: 'ana@example.com',
+          birthDate: DateTime(1990, 2, 15),
+          active: true,
+        );
+  }
+}
+
 class FakeSessionStorage implements SessionStorage {
   String? token;
   int deleteCount = 0;
@@ -93,6 +112,86 @@ void main() {
       'email': 'ana@example.com',
       'senha': 'senha-segura',
     });
+  });
+
+  test('converte o perfil do contrato sem incluir senha ou hash', () {
+    final profile = UserProfile.fromJson({
+      'nome': 'Ana Silva',
+      'email': 'ana@example.com',
+      'dataNascimento': '15/02/1990',
+      'status': 'ATIVO',
+      'senha': 'não deve ser lida',
+      'hash': 'não deve ser lido',
+    });
+
+    expect(profile.name, 'Ana Silva');
+    expect(profile.email, 'ana@example.com');
+    expect(profile.birthDate, DateTime(1990, 2, 15));
+    expect(profile.active, isTrue);
+  });
+
+  test('consulta o perfil com sucesso e mantém estado success', () async {
+    final session = SessionController(
+      repository: FakeAuthRepository(),
+      storage: FakeSessionStorage(),
+    );
+    await session.login(
+      const LoginRequest(email: 'ana@example.com', password: 'senha-segura'),
+    );
+    final profile = ProfileController(
+      repository: FakeProfileRepository(),
+      session: session,
+    );
+
+    await profile.load();
+
+    expect(profile.status, ProfileStatus.success);
+    expect(profile.profile?.email, 'ana@example.com');
+    expect(profile.errorMessage, isNull);
+  });
+
+  test('permite tentar novamente após erro de consulta', () async {
+    final repository = FakeProfileRepository()
+      ..error = const ProfileException('Erro de rede.');
+    final session = SessionController(
+      repository: FakeAuthRepository(),
+      storage: FakeSessionStorage(),
+    );
+    await session.login(
+      const LoginRequest(email: 'ana@example.com', password: 'senha-segura'),
+    );
+    final profile = ProfileController(repository: repository, session: session);
+
+    await profile.load();
+    expect(profile.status, ProfileStatus.error);
+    expect(profile.errorMessage, 'Erro de rede.');
+
+    repository.error = null;
+    await profile.load();
+
+    expect(profile.status, ProfileStatus.success);
+    expect(repository.calls, 2);
+  });
+
+  test('encerra a sessão quando o perfil rejeita o token', () async {
+    final repository = FakeProfileRepository()
+      ..error = const ProfileException(
+        'Sua sessão não está mais válida.',
+        unauthorized: true,
+      );
+    final session = SessionController(
+      repository: FakeAuthRepository(),
+      storage: FakeSessionStorage(),
+    );
+    await session.login(
+      const LoginRequest(email: 'ana@example.com', password: 'senha-segura'),
+    );
+    final profile = ProfileController(repository: repository, session: session);
+
+    await profile.load();
+
+    expect(session.status, SessionStatus.signedOut);
+    expect(profile.status, ProfileStatus.loading);
   });
 
   test('restaura uma sessão persistida sem expor o token', () async {
