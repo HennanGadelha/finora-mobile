@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -212,7 +213,9 @@ class AuthApiClient implements AuthRepository, ProfileRepository {
       );
       httpRequest.headers.contentType = ContentType.json;
       httpRequest.write(jsonEncode(request.toJson()));
-      final response = await httpRequest.close();
+      final response = await httpRequest.close().timeout(
+        const Duration(seconds: 10),
+      );
       final responseBody = await utf8.decoder.bind(response).join();
 
       if (response.statusCode == 200) {
@@ -525,9 +528,14 @@ class ProfileController extends ChangeNotifier {
 }
 
 class LoginPage extends StatefulWidget {
-  const LoginPage({super.key, required this.session});
+  const LoginPage({
+    super.key,
+    required this.session,
+    this.registrationRepository,
+  });
 
   final SessionController session;
+  final RegistrationRepository? registrationRepository;
 
   @override
   State<LoginPage> createState() => _LoginPageState();
@@ -624,6 +632,23 @@ class _LoginPageState extends State<LoginPage> {
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Text('Entrar'),
+                    ),
+                    const SizedBox(height: 12),
+                    TextButton(
+                      onPressed: isSubmitting
+                          ? null
+                          : () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => RegistrationPage(
+                                    repository:
+                                        widget.registrationRepository ??
+                                        RegistrationApiClient(),
+                                  ),
+                                ),
+                              );
+                            },
+                      child: const Text('Criar conta'),
                     ),
                   ],
                 ),
@@ -989,6 +1014,10 @@ class RegistrationApiClient implements RegistrationRepository {
       throw const RegistrationException(
         'Não foi possível conectar ao servidor. Tente novamente.',
       );
+    } on TimeoutException {
+      throw const RegistrationException(
+        'O servidor demorou para responder. Tente novamente.',
+      );
     } on HttpException {
       throw const RegistrationException(
         'Não foi possível concluir o cadastro. Tente novamente.',
@@ -1060,11 +1089,24 @@ class _RegistrationPageState extends State<RegistrationPage> {
       widget.onRegistrationSuccess?.call();
     } on RegistrationException catch (error) {
       if (!mounted) return;
-      setState(() {
-        _isSubmitting = false;
-        _formError = error.message;
-      });
+      _setSubmissionError(error.message);
+    } catch (_) {
+      if (!mounted) return;
+      _setSubmissionError(
+        'Não foi possível concluir o cadastro. Tente novamente.',
+      );
+    } finally {
+      if (mounted && !_isComplete) {
+        setState(() => _isSubmitting = false);
+      }
     }
+  }
+
+  void _setSubmissionError(String message) {
+    setState(() {
+      _isSubmitting = false;
+      _formError = message;
+    });
   }
 
   Future<void> _selectBirthDate() async {

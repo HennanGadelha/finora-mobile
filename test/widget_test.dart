@@ -6,10 +6,12 @@ import 'package:finora_mobile/main.dart';
 
 class FakeRegistrationRepository implements RegistrationRepository {
   RegistrationRequest? request;
+  Object? error;
 
   @override
   Future<void> register(RegistrationRequest request) async {
     this.request = request;
+    if (error != null) throw error!;
   }
 }
 
@@ -103,6 +105,31 @@ void main() {
 
     expect(find.text('Informe seu nome.'), findsOneWidget);
     expect(repository.request, isNull);
+  });
+
+  testWidgets('libera o cadastro quando ocorre uma exceção inesperada', (
+    tester,
+  ) async {
+    final repository = FakeRegistrationRepository()
+      ..error = StateError('falha inesperada');
+    await tester.pumpWidget(
+      MaterialApp(home: RegistrationPage(repository: repository)),
+    );
+    await tester.enterText(find.byType(TextFormField).at(0), 'Ana Silva');
+    await tester.enterText(find.byType(TextFormField).at(1), 'ana@example.com');
+    await tester.enterText(find.byType(TextFormField).at(2), 'senha-segura');
+    await tester.tap(find.byIcon(Icons.calendar_today_outlined));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('OK'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byType(FilledButton));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Não foi possível concluir o cadastro. Tente novamente.'),
+      findsOneWidget,
+    );
+    expect(find.byType(CircularProgressIndicator), findsNothing);
   });
 
   test('serializa o request no contrato de cadastro', () {
@@ -409,6 +436,21 @@ void main() {
 
     expect(find.text('Informe seu e-mail.'), findsOneWidget);
     expect(repository.request, isNull);
+  });
+
+  testWidgets('login oferece acesso ao cadastro', (tester) async {
+    final controller = SessionController(
+      repository: FakeAuthRepository(),
+      storage: FakeSessionStorage(),
+    )..status = SessionStatus.signedOut;
+
+    await tester.pumpWidget(MaterialApp(home: LoginPage(session: controller)));
+    await tester.tap(find.text('Criar conta'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Criar conta'), findsAtLeastNWidgets(1));
+    expect(find.text('Seus dados'), findsOneWidget);
+    expect(find.text('Senha'), findsOneWidget);
   });
 
   testWidgets('login bloqueia nova submissão enquanto aguarda resposta', (
