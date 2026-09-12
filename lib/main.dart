@@ -1,10 +1,10 @@
 import 'dart:convert';
-import 'dart:io';
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:http/http.dart' as http;
 
 class LoginRequest {
   const LoginRequest({required this.email, required this.password});
@@ -214,20 +214,17 @@ class AuthApiClient implements AuthRepository, ProfileRepository {
 
   @override
   Future<AuthSession> login(LoginRequest request) async {
-    final client = HttpClient();
     try {
-      final httpRequest = await client.postUrl(
-        baseUri.resolve('/api/auth/login'),
-      );
-      httpRequest.headers.contentType = ContentType.json;
-      httpRequest.write(jsonEncode(request.toJson()));
-      final response = await httpRequest.close().timeout(
-        const Duration(seconds: 10),
-      );
-      final responseBody = await utf8.decoder.bind(response).join();
+      final response = await http
+          .post(
+            baseUri.resolve('/api/auth/login'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(request.toJson()),
+          )
+          .timeout(const Duration(seconds: 10));
 
       if (response.statusCode == 200) {
-        final payload = jsonDecode(responseBody) as Map<String, dynamic>;
+        final payload = jsonDecode(response.body) as Map<String, dynamic>;
         final token = payload['token'] ?? payload['accessToken'];
         if (token is String && token.isNotEmpty) return AuthSession(token);
       }
@@ -242,24 +239,24 @@ class AuthApiClient implements AuthRepository, ProfileRepository {
       rethrow;
     } on FormatException {
       throw const AuthException('Não foi possível entrar. Tente novamente.');
-    } on SocketException {
+    } on http.ClientException {
       throw const AuthException(
         'Não foi possível conectar ao servidor. Tente novamente.',
       );
-    } on HttpException {
-      throw const AuthException('Não foi possível entrar. Tente novamente.');
-    } finally {
-      client.close(force: true);
+    } on TimeoutException {
+      throw const AuthException(
+        'O servidor demorou para responder. Tente novamente.',
+      );
     }
   }
 
   @override
   Future<bool> validateSession(String token) async {
-    final client = HttpClient();
     try {
-      final httpRequest = await client.getUrl(baseUri.resolve('/api/users/me'));
-      httpRequest.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
-      final response = await httpRequest.close();
+      final response = await http.get(
+        baseUri.resolve('/api/users/me'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 10));
       if (response.statusCode == 401 || response.statusCode == 403) {
         return false;
       }
@@ -271,27 +268,24 @@ class AuthApiClient implements AuthRepository, ProfileRepository {
       );
     } on AuthException {
       rethrow;
-    } on SocketException {
+    } on http.ClientException {
       throw const AuthException(
         'Não foi possível conectar ao servidor. Tente novamente.',
       );
-    } on HttpException {
+    } on TimeoutException {
       throw const AuthException(
-        'Não foi possível validar a sessão. Tente novamente.',
+        'O servidor demorou para responder. Tente novamente.',
       );
-    } finally {
-      client.close(force: true);
     }
   }
 
   @override
   Future<UserProfile> fetchProfile(String token) async {
-    final client = HttpClient();
     try {
-      final httpRequest = await client.getUrl(baseUri.resolve('/api/users/me'));
-      httpRequest.headers.set(HttpHeaders.authorizationHeader, 'Bearer $token');
-      final response = await httpRequest.close();
-      final responseBody = await utf8.decoder.bind(response).join();
+      final response = await http.get(
+        baseUri.resolve('/api/users/me'),
+        headers: {'Authorization': 'Bearer $token'},
+      ).timeout(const Duration(seconds: 10));
       if (response.statusCode == 401 || response.statusCode == 403) {
         throw const ProfileException(
           'Sua sessão não está mais válida.',
@@ -299,7 +293,7 @@ class AuthApiClient implements AuthRepository, ProfileRepository {
         );
       }
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        final payload = jsonDecode(responseBody) as Map<String, dynamic>;
+        final payload = jsonDecode(response.body) as Map<String, dynamic>;
         return UserProfile.fromJson(payload);
       }
       throw const ProfileException(
@@ -311,16 +305,14 @@ class AuthApiClient implements AuthRepository, ProfileRepository {
       throw const ProfileException(
         'Não foi possível carregar seu perfil. Tente novamente.',
       );
-    } on SocketException {
+    } on http.ClientException {
       throw const ProfileException(
         'Não foi possível conectar ao servidor. Tente novamente.',
       );
-    } on HttpException {
+    } on TimeoutException {
       throw const ProfileException(
-        'Não foi possível carregar seu perfil. Tente novamente.',
+        'O servidor demorou para responder. Tente novamente.',
       );
-    } finally {
-      client.close(force: true);
     }
   }
 
@@ -329,15 +321,17 @@ class AuthApiClient implements AuthRepository, ProfileRepository {
     String token,
     ProfileUpdateRequest request,
   ) async {
-    final client = HttpClient();
     try {
-      final httpRequest = await client.putUrl(baseUri.resolve('/api/users/me'));
-      httpRequest.headers
-        ..contentType = ContentType.json
-        ..set(HttpHeaders.authorizationHeader, 'Bearer $token');
-      httpRequest.write(jsonEncode(request.toJson()));
-      final response = await httpRequest.close();
-      final responseBody = await utf8.decoder.bind(response).join();
+      final response = await http
+          .put(
+            baseUri.resolve('/api/users/me'),
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer $token',
+            },
+            body: jsonEncode(request.toJson()),
+          )
+          .timeout(const Duration(seconds: 10));
       if (response.statusCode == 401 || response.statusCode == 403) {
         throw const ProfileException(
           'Sua sessão não está mais válida.',
@@ -345,7 +339,7 @@ class AuthApiClient implements AuthRepository, ProfileRepository {
         );
       }
       if (response.statusCode >= 200 && response.statusCode < 300) {
-        final payload = jsonDecode(responseBody) as Map<String, dynamic>;
+        final payload = jsonDecode(response.body) as Map<String, dynamic>;
         return UserProfile.fromJson(payload);
       }
       if (response.statusCode >= 400 && response.statusCode < 500) {
@@ -360,16 +354,14 @@ class AuthApiClient implements AuthRepository, ProfileRepository {
       throw const ProfileException(
         'Não foi possível salvar seu perfil. Tente novamente.',
       );
-    } on SocketException {
+    } on http.ClientException {
       throw const ProfileException(
         'Não foi possível conectar ao servidor. Tente novamente.',
       );
-    } on HttpException {
+    } on TimeoutException {
       throw const ProfileException(
-        'Não foi possível salvar seu perfil. Tente novamente.',
+        'O servidor demorou para responder. Tente novamente.',
       );
-    } finally {
-      client.close(force: true);
     }
   }
 }
@@ -1017,14 +1009,14 @@ class RegistrationApiClient implements RegistrationRepository {
 
   @override
   Future<void> register(RegistrationRequest request) async {
-    final client = HttpClient();
     try {
-      final httpRequest = await client.postUrl(
-        baseUri.resolve('/api/auth/register'),
-      );
-      httpRequest.headers.contentType = ContentType.json;
-      httpRequest.write(jsonEncode(request.toJson()));
-      final response = await httpRequest.close();
+      final response = await http
+          .post(
+            baseUri.resolve('/api/auth/register'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode(request.toJson()),
+          )
+          .timeout(const Duration(seconds: 10));
       if (response.statusCode == 201) return;
       if (response.statusCode == 409) {
         throw const RegistrationException('Este e-mail já está cadastrado.');
@@ -1037,7 +1029,7 @@ class RegistrationApiClient implements RegistrationRepository {
       );
     } on RegistrationException {
       rethrow;
-    } on SocketException {
+    } on http.ClientException {
       throw const RegistrationException(
         'Não foi possível conectar ao servidor. Tente novamente.',
       );
@@ -1045,12 +1037,6 @@ class RegistrationApiClient implements RegistrationRepository {
       throw const RegistrationException(
         'O servidor demorou para responder. Tente novamente.',
       );
-    } on HttpException {
-      throw const RegistrationException(
-        'Não foi possível concluir o cadastro. Tente novamente.',
-      );
-    } finally {
-      client.close(force: true);
     }
   }
 }
