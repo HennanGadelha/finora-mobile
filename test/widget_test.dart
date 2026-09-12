@@ -35,6 +35,9 @@ class FakeAuthRepository implements AuthRepository {
 class FakeProfileRepository implements ProfileRepository {
   UserProfile? response;
   ProfileException? error;
+  ProfileUpdateRequest? updateRequest;
+  UserProfile? updateResponse;
+  ProfileException? updateError;
   int calls = 0;
 
   @override
@@ -46,6 +49,22 @@ class FakeProfileRepository implements ProfileRepository {
           name: 'Ana Silva',
           email: 'ana@example.com',
           birthDate: DateTime(1990, 2, 15),
+          active: true,
+        );
+  }
+
+  @override
+  Future<UserProfile> updateProfile(
+    String token,
+    ProfileUpdateRequest request,
+  ) async {
+    updateRequest = request;
+    if (updateError != null) throw updateError!;
+    return updateResponse ??
+        UserProfile(
+          name: request.name,
+          email: 'ana@example.com',
+          birthDate: request.birthDate,
           active: true,
         );
   }
@@ -130,6 +149,18 @@ void main() {
     expect(profile.active, isTrue);
   });
 
+  test('serializa somente os campos permitidos na edição do perfil', () {
+    final request = ProfileUpdateRequest(
+      name: 'Ana Souza',
+      birthDate: DateTime(1991, 3, 16),
+    );
+
+    expect(request.toJson(), {
+      'nome': 'Ana Souza',
+      'dataNascimento': '16/03/1991',
+    });
+  });
+
   test('consulta o perfil com sucesso e mantém estado success', () async {
     final session = SessionController(
       repository: FakeAuthRepository(),
@@ -171,6 +202,96 @@ void main() {
 
     expect(profile.status, ProfileStatus.success);
     expect(repository.calls, 2);
+  });
+
+  test('atualiza o perfil e reflete os dados retornados', () async {
+    final repository = FakeProfileRepository();
+    final session = SessionController(
+      repository: FakeAuthRepository(),
+      storage: FakeSessionStorage(),
+    );
+    await session.login(
+      const LoginRequest(email: 'ana@example.com', password: 'senha-segura'),
+    );
+    final profile = ProfileController(repository: repository, session: session);
+    await profile.load();
+
+    final updated = await profile.updateProfile(
+      ProfileUpdateRequest(name: 'Ana Souza', birthDate: DateTime(1991, 3, 16)),
+    );
+
+    expect(updated, isTrue);
+    expect(profile.updateStatus, ProfileUpdateStatus.success);
+    expect(profile.profile?.name, 'Ana Souza');
+    expect(profile.profile?.birthDate, DateTime(1991, 3, 16));
+    expect(repository.updateRequest?.toJson().containsKey('email'), isFalse);
+  });
+
+  test(
+    'preserva o perfil quando a atualização falha e permite nova tentativa',
+    () async {
+      final repository = FakeProfileRepository()
+        ..updateError = const ProfileException('Erro de rede.');
+      final session = SessionController(
+        repository: FakeAuthRepository(),
+        storage: FakeSessionStorage(),
+      );
+      await session.login(
+        const LoginRequest(email: 'ana@example.com', password: 'senha-segura'),
+      );
+      final profile = ProfileController(
+        repository: repository,
+        session: session,
+      );
+      await profile.load();
+
+      final updated = await profile.updateProfile(
+        ProfileUpdateRequest(
+          name: 'Ana Souza',
+          birthDate: DateTime(1991, 3, 16),
+        ),
+      );
+
+      expect(updated, isFalse);
+      expect(profile.updateStatus, ProfileUpdateStatus.error);
+      expect(profile.updateErrorMessage, 'Erro de rede.');
+      expect(profile.profile?.name, 'Ana Silva');
+
+      repository.updateError = null;
+      expect(
+        await profile.updateProfile(
+          ProfileUpdateRequest(
+            name: 'Ana Souza',
+            birthDate: DateTime(1991, 3, 16),
+          ),
+        ),
+        isTrue,
+      );
+      expect(profile.profile?.name, 'Ana Souza');
+    },
+  );
+
+  test('encerra a sessão quando a atualização rejeita o token', () async {
+    final repository = FakeProfileRepository()
+      ..updateError = const ProfileException(
+        'Sua sessão não está mais válida.',
+        unauthorized: true,
+      );
+    final session = SessionController(
+      repository: FakeAuthRepository(),
+      storage: FakeSessionStorage(),
+    );
+    await session.login(
+      const LoginRequest(email: 'ana@example.com', password: 'senha-segura'),
+    );
+    final profile = ProfileController(repository: repository, session: session);
+    await profile.load();
+
+    await profile.updateProfile(
+      ProfileUpdateRequest(name: 'Ana Souza', birthDate: DateTime(1991, 3, 16)),
+    );
+
+    expect(session.status, SessionStatus.signedOut);
   });
 
   test('encerra a sessão quando o perfil rejeita o token', () async {

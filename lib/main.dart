@@ -47,6 +47,18 @@ class UserProfile {
   }
 }
 
+class ProfileUpdateRequest {
+  const ProfileUpdateRequest({required this.name, required this.birthDate});
+
+  final String name;
+  final DateTime birthDate;
+
+  Map<String, dynamic> toJson() => {
+    'nome': name,
+    'dataNascimento': _formatDate(birthDate),
+  };
+}
+
 DateTime _parseDate(String value) {
   final match = RegExp(r'^(\d{2})/(\d{2})/(\d{4})$').firstMatch(value);
   if (match == null) {
@@ -71,6 +83,8 @@ abstract interface class AuthRepository {
 
 abstract interface class ProfileRepository {
   Future<UserProfile> fetchProfile(String token);
+
+  Future<UserProfile> updateProfile(String token, ProfileUpdateRequest request);
 }
 
 abstract interface class SessionStorage {
@@ -298,6 +312,55 @@ class AuthApiClient implements AuthRepository, ProfileRepository {
       client.close(force: true);
     }
   }
+
+  @override
+  Future<UserProfile> updateProfile(
+    String token,
+    ProfileUpdateRequest request,
+  ) async {
+    final client = HttpClient();
+    try {
+      final httpRequest = await client.putUrl(baseUri.resolve('/api/users/me'));
+      httpRequest.headers
+        ..contentType = ContentType.json
+        ..set(HttpHeaders.authorizationHeader, 'Bearer $token');
+      httpRequest.write(jsonEncode(request.toJson()));
+      final response = await httpRequest.close();
+      final responseBody = await utf8.decoder.bind(response).join();
+      if (response.statusCode == 401 || response.statusCode == 403) {
+        throw const ProfileException(
+          'Sua sessão não está mais válida.',
+          unauthorized: true,
+        );
+      }
+      if (response.statusCode >= 200 && response.statusCode < 300) {
+        final payload = jsonDecode(responseBody) as Map<String, dynamic>;
+        return UserProfile.fromJson(payload);
+      }
+      if (response.statusCode >= 400 && response.statusCode < 500) {
+        throw const ProfileException('Revise os dados informados.');
+      }
+      throw const ProfileException(
+        'Não foi possível salvar seu perfil. Tente novamente.',
+      );
+    } on ProfileException {
+      rethrow;
+    } on FormatException {
+      throw const ProfileException(
+        'Não foi possível salvar seu perfil. Tente novamente.',
+      );
+    } on SocketException {
+      throw const ProfileException(
+        'Não foi possível conectar ao servidor. Tente novamente.',
+      );
+    } on HttpException {
+      throw const ProfileException(
+        'Não foi possível salvar seu perfil. Tente novamente.',
+      );
+    } finally {
+      client.close(force: true);
+    }
+  }
 }
 
 enum SessionStatus { loading, signedOut, signedIn }
@@ -379,6 +442,8 @@ class ProfileException implements Exception {
 
 enum ProfileStatus { loading, success, error }
 
+enum ProfileUpdateStatus { initial, submitting, success, error }
+
 class ProfileController extends ChangeNotifier {
   ProfileController({required this.repository, required this.session});
 
@@ -387,6 +452,8 @@ class ProfileController extends ChangeNotifier {
   ProfileStatus status = ProfileStatus.loading;
   UserProfile? profile;
   String? errorMessage;
+  ProfileUpdateStatus updateStatus = ProfileUpdateStatus.initial;
+  String? updateErrorMessage;
 
   Future<void> load() async {
     status = ProfileStatus.loading;
@@ -411,6 +478,48 @@ class ProfileController extends ChangeNotifier {
       status = ProfileStatus.error;
       errorMessage = 'Não foi possível carregar seu perfil. Tente novamente.';
     }
+    notifyListeners();
+  }
+
+  Future<bool> updateProfile(ProfileUpdateRequest request) async {
+    if (updateStatus == ProfileUpdateStatus.submitting) return false;
+    final token = session.accessToken;
+    if (token == null || token.isEmpty) {
+      await session.logout();
+      return false;
+    }
+    updateStatus = ProfileUpdateStatus.submitting;
+    updateErrorMessage = null;
+    notifyListeners();
+    try {
+      profile = await repository.updateProfile(token, request);
+      updateStatus = ProfileUpdateStatus.success;
+      return true;
+    } on ProfileException catch (error) {
+      if (error.unauthorized) {
+        await session.logout();
+        return false;
+      }
+      updateStatus = ProfileUpdateStatus.error;
+      updateErrorMessage = error.message;
+      return false;
+    } catch (_) {
+      updateStatus = ProfileUpdateStatus.error;
+      updateErrorMessage =
+          'Não foi possível salvar seu perfil. Tente novamente.';
+      return false;
+    } finally {
+      if (updateStatus != ProfileUpdateStatus.success) {
+        notifyListeners();
+      } else {
+        notifyListeners();
+      }
+    }
+  }
+
+  void resetUpdateState() {
+    updateStatus = ProfileUpdateStatus.initial;
+    updateErrorMessage = null;
     notifyListeners();
   }
 }
@@ -543,6 +652,11 @@ class ProtectedHomePage extends StatefulWidget {
 
 class _ProtectedHomePageState extends State<ProtectedHomePage> {
   late final ProfileController _profile;
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+  final _birthDateController = TextEditingController();
+  DateTime? _editBirthDate;
+  bool _isEditing = false;
 
   @override
   void initState() {
@@ -559,11 +673,59 @@ class _ProtectedHomePageState extends State<ProtectedHomePage> {
     _profile
       ..removeListener(_onProfileChanged)
       ..dispose();
+    _nameController.dispose();
+    _birthDateController.dispose();
     super.dispose();
   }
 
   void _onProfileChanged() {
     if (mounted) setState(() {});
+  }
+
+  void _startEditing(UserProfile profile) {
+    _nameController.text = profile.name;
+    _editBirthDate = profile.birthDate;
+    _birthDateController.text = _formatDate(profile.birthDate);
+    _profile.resetUpdateState();
+    setState(() => _isEditing = true);
+  }
+
+  void _cancelEditing() {
+    _profile.resetUpdateState();
+    setState(() => _isEditing = false);
+  }
+
+  Future<void> _selectEditBirthDate() async {
+    final selected = await showDatePicker(
+      context: context,
+      initialDate: _editBirthDate ?? DateTime(1990),
+      firstDate: DateTime(1900),
+      lastDate: DateTime.now(),
+      helpText: 'Selecione sua data de nascimento',
+    );
+    if (selected == null || !mounted) return;
+    setState(() {
+      _editBirthDate = selected;
+      _birthDateController.text = _formatDate(selected);
+    });
+  }
+
+  Future<void> _saveProfile() async {
+    FocusScope.of(context).unfocus();
+    if (!_formKey.currentState!.validate()) return;
+    final birthDate = _editBirthDate;
+    if (birthDate == null) return;
+    final saved = await _profile.updateProfile(
+      ProfileUpdateRequest(
+        name: _nameController.text.trim(),
+        birthDate: birthDate,
+      ),
+    );
+    if (!mounted || !saved) return;
+    setState(() => _isEditing = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Perfil atualizado com sucesso.')),
+    );
   }
 
   @override
@@ -619,44 +781,120 @@ class _ProtectedHomePageState extends State<ProtectedHomePage> {
         );
       case ProfileStatus.success:
         final profile = _profile.profile!;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
+        return _isEditing ? _buildEditForm() : _buildProfile(profile);
+    }
+  }
+
+  Widget _buildProfile(UserProfile profile) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text('Meu perfil', style: Theme.of(context).textTheme.headlineSmall),
+        const SizedBox(height: 8),
+        const Text('Confira os dados da sua conta.'),
+        const SizedBox(height: 24),
+        _ProfileField(label: 'Nome', value: profile.name),
+        _ProfileField(label: 'E-mail', value: profile.email),
+        _ProfileField(
+          label: 'Data de nascimento',
+          value: _formatDate(profile.birthDate),
+        ),
+        _ProfileField(
+          label: 'Estado da conta',
+          value: profile.active ? 'Ativa' : 'Inativa',
+        ),
+        const SizedBox(height: 24),
+        FilledButton.icon(
+          onPressed: () => _startEditing(profile),
+          icon: const Icon(Icons.edit_outlined),
+          label: const Text('Editar perfil'),
+        ),
+        const SizedBox(height: 12),
+        OutlinedButton.icon(
+          onPressed: () {},
+          icon: const Icon(Icons.person_off_outlined),
+          label: const Text('Inativar conta'),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: Theme.of(context).colorScheme.error,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEditForm() {
+    final isSubmitting =
+        _profile.updateStatus == ProfileUpdateStatus.submitting;
+    return Form(
+      key: _formKey,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Editar perfil',
+            style: Theme.of(context).textTheme.headlineSmall,
+          ),
+          const SizedBox(height: 8),
+          const Text('Atualize apenas os dados permitidos da sua conta.'),
+          const SizedBox(height: 24),
+          TextFormField(
+            controller: _nameController,
+            enabled: !isSubmitting,
+            textInputAction: TextInputAction.next,
+            decoration: const InputDecoration(labelText: 'Nome completo'),
+            validator: (value) => value == null || value.trim().isEmpty
+                ? 'Informe seu nome.'
+                : null,
+          ),
+          const SizedBox(height: 16),
+          TextFormField(
+            controller: _birthDateController,
+            enabled: !isSubmitting,
+            readOnly: true,
+            onTap: isSubmitting ? null : _selectEditBirthDate,
+            decoration: const InputDecoration(
+              labelText: 'Data de nascimento',
+              hintText: 'dd/MM/yyyy',
+              suffixIcon: Icon(Icons.calendar_today_outlined),
+            ),
+            validator: (_) => _editBirthDate == null
+                ? 'Informe sua data de nascimento.'
+                : null,
+          ),
+          if (_profile.updateErrorMessage != null) ...[
+            const SizedBox(height: 16),
             Text(
-              'Meu perfil',
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 8),
-            const Text('Confira os dados da sua conta.'),
-            const SizedBox(height: 24),
-            _ProfileField(label: 'Nome', value: profile.name),
-            _ProfileField(label: 'E-mail', value: profile.email),
-            _ProfileField(
-              label: 'Data de nascimento',
-              value: _formatDate(profile.birthDate),
-            ),
-            _ProfileField(
-              label: 'Estado da conta',
-              value: profile.active ? 'Ativa' : 'Inativa',
-            ),
-            const SizedBox(height: 24),
-            FilledButton.icon(
-              onPressed: () {},
-              icon: const Icon(Icons.edit_outlined),
-              label: const Text('Editar perfil'),
-            ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: () {},
-              icon: const Icon(Icons.person_off_outlined),
-              label: const Text('Inativar conta'),
-              style: OutlinedButton.styleFrom(
-                foregroundColor: Theme.of(context).colorScheme.error,
-              ),
+              _profile.updateErrorMessage!,
+              style: TextStyle(color: Theme.of(context).colorScheme.error),
             ),
           ],
-        );
-    }
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: isSubmitting ? null : _cancelEditing,
+                  child: const Text('Cancelar'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: FilledButton(
+                  onPressed: isSubmitting ? null : _saveProfile,
+                  child: isSubmitting
+                      ? const SizedBox(
+                          height: 20,
+                          width: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('Salvar'),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }
 
