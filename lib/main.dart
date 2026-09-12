@@ -545,6 +545,7 @@ class _LoginPageState extends State<LoginPage> {
   final _formKey = GlobalKey<FormState>();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
+  bool _obscurePassword = true;
 
   @override
   void dispose() {
@@ -607,8 +608,25 @@ class _LoginPageState extends State<LoginPage> {
                     TextFormField(
                       controller: _passwordController,
                       enabled: !isSubmitting,
-                      obscureText: true,
-                      decoration: const InputDecoration(labelText: 'Senha'),
+                      obscureText: _obscurePassword,
+                      decoration: InputDecoration(
+                        labelText: 'Senha',
+                        suffixIcon: IconButton(
+                          onPressed: isSubmitting
+                              ? null
+                              : () => setState(
+                                  () => _obscurePassword = !_obscurePassword,
+                                ),
+                          tooltip: _obscurePassword
+                              ? 'Mostrar senha'
+                              : 'Ocultar senha',
+                          icon: Icon(
+                            _obscurePassword
+                                ? Icons.visibility_outlined
+                                : Icons.visibility_off_outlined,
+                          ),
+                        ),
+                      ),
                       validator: (value) => value == null || value.isEmpty
                           ? 'Informe sua senha.'
                           : null,
@@ -1052,6 +1070,7 @@ class _RegistrationPageState extends State<RegistrationPage> {
   String? _formError;
   bool _isSubmitting = false;
   bool _isComplete = false;
+  bool _obscurePassword = true;
 
   @override
   void dispose() {
@@ -1181,9 +1200,23 @@ class _RegistrationPageState extends State<RegistrationPage> {
           TextFormField(
             controller: _passwordController,
             enabled: !_isSubmitting,
-            obscureText: true,
+            obscureText: _obscurePassword,
             textInputAction: TextInputAction.next,
-            decoration: const InputDecoration(labelText: 'Senha'),
+            decoration: InputDecoration(
+              labelText: 'Senha',
+              suffixIcon: IconButton(
+                onPressed: _isSubmitting
+                    ? null
+                    : () =>
+                          setState(() => _obscurePassword = !_obscurePassword),
+                tooltip: _obscurePassword ? 'Mostrar senha' : 'Ocultar senha',
+                icon: Icon(
+                  _obscurePassword
+                      ? Icons.visibility_outlined
+                      : Icons.visibility_off_outlined,
+                ),
+              ),
+            ),
             validator: (value) =>
                 value == null || value.isEmpty ? 'Informe sua senha.' : null,
           ),
